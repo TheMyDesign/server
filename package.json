@@ -1,0 +1,24 @@
+{
+  "name": "srver_md",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "nodemon server.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.18.2",
+    "firebase": "^9.19.0",
+    "firebase-admin": "^11.5.0",
+    "jimp": "^0.22.7",
+    "nodemon": "^2.0.22"
+  },
+  "devDependencies": {
+    "axios": "^1.4.0",
+    "request": "^2.88.2",
+    "socket.io": "^4.6.1"
+  }
+}
