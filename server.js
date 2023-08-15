@@ -2,30 +2,46 @@ const express = require('express')
 const socket = require('socket.io'); //requires socket.io module
 const axios = require("axios");
 const Jimp = require('jimp');
+const bodyParser = require('body-parser');
+const uuid = require('uuid-v4');
+const {Storage} = require('@google-cloud/storage');
 
 const app = express()
 const admin = require("firebase-admin")
 const credentials = require("./serviceAccountKey.json")
 admin.initializeApp({
-    credential: admin.credential.cert(credentials)
+    credential: admin.credential.cert(credentials),
+    storageBucket: 'mydesign-cf41a.appspot.com'
 });
 const db = admin.firestore()
 
 const PORT = process.env.PORT || 8080
 
+app.use(bodyParser.json());
 
 
 let itemStringToFile = new Map();
 itemStringToFile.set('t-shirt-grey', 'itemsDir/t-shirt-grey.png');
 itemStringToFile.set('hat-white', 'itemsDir/hat-white.jpg');
-let itemStringToXY = new Map();
-itemStringToXY.set('t-shirt-grey', [300,300]);
-itemStringToXY.set('hat-white', [350,300]);
+itemStringToFile.set('Pants', 'itemsDir/pants.png');
+itemStringToFile.set('Shirt', 'itemsDir/shirt-white.png');
+itemStringToFile.set('T-Shirt', 'itemsDir/t-shirt-grey.png');
+itemStringToFile.set('Coat', 'itemsDir/coat.png');
+itemStringToFile.set('Hat', 'itemsDir/hat-white.jpg');
 
-function generateUniqueId() {
+let itemStringToXY = new Map();
+itemStringToXY.set('t-shirt-grey', [300, 300]);
+itemStringToXY.set('hat-white', [350, 300]);
+itemStringToXY.set('Pants', [300, 300]);
+itemStringToXY.set('Shirt', [300, 300]);
+itemStringToXY.set('T-Shirt', [300, 300]);
+itemStringToXY.set('Coat', [300, 300]);
+itemStringToXY.set('Hat', [350, 300]);
+
+function generateUniqueId(clothingKind, userId = "") {
     const timestamp = new Date().getTime().toString();
-    const uniqueId = Math.random().toString(36).substr(2, 9);
-    return timestamp + '_' + uniqueId;
+    // const uniqueId = Math.random().toString(36).substr(2, 9);
+    return "imageOutput/" + clothingKind + "_" + userId + '_' + timestamp + ".jpg";
 }
 
 const getCounter = (() => {
@@ -38,65 +54,158 @@ const getCounter = (() => {
 })();
 
 const Dalle2Token = require('./env.js');
+const aiGenerator = require("./aiGenerator");
+const imageCombiner = require("./imageCombiner");
+const firebaseUploader = require("./firebaseUploader");
 
-async function generateCombineImage(prompt, itemString,image1Path, x, y) {
+// how to use - http://localhost:8080/yourOwnOngoingOrders?userId=
+app.get("/yourOwnOngoingOrders", async (req, res) => {
+    let filteredResArr;
     try {
-        const response = await axios.post(
-            "https://api.openai.com/v1/images/generations",
-            {
-                prompt: prompt,
-                size: "256x256",
-            },
-            {
-                headers: {
-                    "Content-Type": "application/json",
-                    Authorization: `Bearer ${Dalle2Token}`,
-                },
-                responseType: "arraybuffer",
+        const uid = req.query.userId;
+        console.log("/yourOwnOngoingOrders")
+        const UserExistingDesignRef = db.collection("UsersOrders")
+        const response = await UserExistingDesignRef.get()
+        let responseArr = []
+        response.forEach(doc => {
+            // responseArr.push(doc.data())
+            const itemData = doc.data();
+            const itemId = doc.id; // Get the document ID as the item ID
+            responseArr.push({itemId, ...itemData}); // Include itemId in the response
+        });
+        filteredResArr = []
+        responseArr.forEach(item => {
+            if (item["userId"] === uid) {
+                filteredResArr.push(item)
             }
-        );
-
-        if (response.status === 200) {
-
-
-            const jsonString = response.data.toString()
-            const parsedJson = JSON.parse(jsonString);
-            const url = parsedJson.data[0].url;
-
-            const loadedImages = await Promise.all([Jimp.read(image1Path), Jimp.read(url)]);
-            const baseImage = loadedImages[0];
-            const topImage = loadedImages[1];
-
-            // topImage.resize(500, 500);
-            baseImage.composite(topImage, x, y);
-            // const now = new Date();
-            // const i = getCounter()
-            const id = generateUniqueId()
-            const outputFileName = "imageOutput/" +itemString+ id.toString() + ".jpg"
-
-            await baseImage.writeAsync(outputFileName);
-            console.log("generateCombineImage done")
-        }
-    } catch (error) {
-        console.error(`Failed to generate image: ${error.message}`);
-    }
-}
-
-// how to use - http://localhost:8080/generatedImage?prompt=fire ball&itemString=t-shirt
-app.get("/generatedImage", async (req, res) => {
-    try {
-        console.log("/generatedImage")
-        const prompt = req.query.prompt;
-        const itemString = req.query.itemString;
-        const s = "/generatedImage\n"+prompt+itemString
-        console.log(s)
-        const filePath = itemStringToFile.get(itemString)
-        await generateCombineImage(prompt, itemString, filePath, itemStringToXY.get(itemString)[0], itemStringToXY.get(itemString)[1])
-        res.send(s)
+        })
+        res.send(filteredResArr);
     } catch (error) {
         res.send(error)
     }
 })
+
+
+// how to use - http://10.0.2.2:8080/AddOrder
+app.post("/PlaceOrder", async (req, res) => {
+    try {
+        console.log("/PlaceOrder")
+        const designItemId = req.body.designItemId;
+        const itemPrice = req.body.itemPrice;
+
+        const doc = await getDocumentById("/UserExistingDesign", designItemId)
+        console.log(doc)
+
+        await firebaseUploader.PalaceOrderToFirebase(doc, itemPrice, admin)
+
+        res.status(200).json({message: 'Order placed successfully'});
+    } catch (error) {
+        res.send(error)
+    }
+})
+
+async function getDocumentById(collection, documentId) {
+    try {
+        const documentRef = db.collection(collection).doc(documentId);
+        const snapshot = await documentRef.get();
+
+        if (snapshot.exists) {
+            const documentData = snapshot.data();
+            // console.log('Document data:', documentData);
+            return documentData;
+        } else {
+            // console.log('Document not found');
+            return null;
+        }
+    } catch (error) {
+        console.error('Error getting document:', error);
+        throw error;
+    }
+}
+
+
+// how to use - http://localhost:8080/yourOwnExistingDesign?userId=
+app.get("/yourOwnExistingDesign", async (req, res) => {
+    let filteredResArr;
+    try {
+        const uid = req.query.userId;
+        console.log("/yourOwnExistingDesign")
+        const UserExistingDesignRef = db.collection("UserExistingDesign")
+        const response = await UserExistingDesignRef.get()
+        let responseArr = []
+        response.forEach(doc => {
+            // responseArr.push(doc.data())
+            const itemData = doc.data();
+            const itemId = doc.id; // Get the document ID as the item ID
+            responseArr.push({itemId, ...itemData}); // Include itemId in the response
+        });
+        filteredResArr = []
+        responseArr.forEach(item => {
+            if (item["userId"] === uid) {
+                filteredResArr.push(item)
+            }
+        })
+        res.send(filteredResArr);
+    } catch (error) {
+        res.send(error)
+    }
+})
+
+// how to use - http://10.0.2.2:8080/yourOwnExistingDesing
+app.post("/generatedNewImage", async (req, res) => {
+    try {
+        console.log("/generatedNewImage")
+
+        const receivedData = req.body;
+        console.log('Received JSON:', receivedData);
+        const clothingKind = receivedData.clothingKind;
+        const prompt = receivedData.customText;
+        const userId = receivedData.userId;
+
+        const itemString = clothingKind
+
+        const aiPhotoUrl = await aiGenerator.generateAIPhoto(prompt);
+        console.log("url = " + aiPhotoUrl)
+
+        // Use imageCombiner module to combine images
+        const baseImagePath = itemStringToFile.get(itemString); // Provide the path to your base image
+        const x = itemStringToXY.get(itemString)[0]; // Example x-coordinate for positioning
+        const y = itemStringToXY.get(itemString)[1]; // Example y-coordinate for positioning
+        const outputFileName = generateUniqueId(clothingKind, userId); // Provide the desired output file name
+
+        await imageCombiner.combineImages(baseImagePath, aiPhotoUrl, x, y, outputFileName);
+
+        const imageUrl = await firebaseUploader.uploadImageAndSaveToFirestore(userId, outputFileName, receivedData, admin);
+
+        res.status(200).json({message: 'JSON data received successfully', imageUrl: imageUrl});
+        res.send()
+
+    } catch (error) {
+        res.send(error)
+    }
+})
+
+
+// how to use - http://localhost:8080/uploadPhoto
+app.post("/uploadPhoto", async (req, res) => {
+    await uploadFile("imageOutput/hat-white1683017516837_snzfztp4s.jpg")
+    res.status(200).json({message: 'uploadPhoto successfully'});
+    res.send()
+})
+
+async function uploadFile(filename) {
+
+    const bucket = admin.storage().bucket();
+    const destinationFileName = "user_existing_design/" + filename; // Replace yourDesiredFileName with the desired file name
+    await bucket.upload(filename, {
+        destination: destinationFileName,
+        metadata: {
+            cacheControl: "public, max-age=315360000",
+            contentType: "image/jpg"
+        }
+    });
+
+}
 
 
 //
@@ -131,6 +240,7 @@ app.get("/read/UserDesign/:Bid", async (req, res) => {
         res.send(error)
     }
 })
+//http://10.0.2.2:8080/
 // how to use - http://localhost:8080/read/UserExistenceDesign/down or up
 app.get("/read/UserExistenceDesign/:Price", async (req, res) => {
     let filterdResArr;
@@ -144,7 +254,7 @@ app.get("/read/UserExistenceDesign/:Price", async (req, res) => {
         });
         filterdResArr = []
         responseArr.forEach(item => {
-                filterdResArr.push(item)
+            filterdResArr.push(item)
         })
         if (req.params.Price === "down") {
             filterdResArr.sort(comparePrice)
@@ -247,31 +357,31 @@ app.get("/read/Users", async (req, res) => {
 
 
 function indexToSubjectName(index) {
-    if (index === 0){
+    if (index === 0) {
         return "pants"
     }
-    if (index === 1){
+    if (index === 1) {
         return "mobile"
     }
-    if (index === 2){
+    if (index === 2) {
         return "notebooks"
     }
-    if (index === 3){
+    if (index === 3) {
         return "office_supplies"
     }
-    if (index === 4){
+    if (index === 4) {
         return "hats"
     }
-    if (index === 5){
+    if (index === 5) {
         return "games"
     }
-    if (index === 6){
+    if (index === 6) {
         return "clothing"
     }
-    if (index === 7){
+    if (index === 7) {
         return "puzzles"
     }
-    if (index === 8){
+    if (index === 8) {
         return "toys"
     }
     return ""
@@ -284,19 +394,7 @@ app.get("/read/UserDesign/filter/:arr", async (req, res) => {
     console.log(filterArr)
 
     try {
-        // mSelectedOptions[0] = checkbox_pants.isChecked();
-        // mSelectedOptions[1] = checkbox_mobile.isChecked();
-        // mSelectedOptions[2] = checkbox_notebooks.isChecked();
-        // mSelectedOptions[3] = checkbox_office_supplies.isChecked();
-        // mSelectedOptions[4] = checkbox_hats.isChecked();
-        // mSelectedOptions[5] = checkbox_games.isChecked();
-        // mSelectedOptions[6] = checkbox_clothing.isChecked();
-        // mSelectedOptions[7] = checkbox_puzzles.isChecked();
-        // mSelectedOptions[8] = checkbox_toys.isChecked();
-        // int low =0;
-        // int high =0;
-        // 1 for low to high 0 for high to low
-        // console.log("enter /read/Users Design filter" + filterArr)
+
         console.log("enter /read/Users Design filter")
         const UsersDesignRef = db.collection("User Design")
         const response = await UsersDesignRef.get()
@@ -307,7 +405,7 @@ app.get("/read/UserDesign/filter/:arr", async (req, res) => {
         filterdResArr = []
         responseArr.forEach(item => {
             if (item["Order State"] === "false") {
-                if(filterItems(filterArr,item,"Bid")){
+                if (filterItems(filterArr, item, "Bid")) {
                     filterdResArr.push(item)
                 }
             }
@@ -334,19 +432,7 @@ app.get("/read/UserExistenceDesign/filter/:", async (req, res) => {
     let filterArr = str.split(",");
     console.log(filterArr)
     try {
-        // mSelectedOptions[0] = checkbox_pants.isChecked();
-        // mSelectedOptions[1] = checkbox_mobile.isChecked();
-        // mSelectedOptions[2] = checkbox_notebooks.isChecked();
-        // mSelectedOptions[3] = checkbox_office_supplies.isChecked();
-        // mSelectedOptions[4] = checkbox_hats.isChecked();
-        // mSelectedOptions[5] = checkbox_games.isChecked();
-        // mSelectedOptions[6] = checkbox_clothing.isChecked();
-        // mSelectedOptions[7] = checkbox_puzzles.isChecked();
-        // mSelectedOptions[8] = checkbox_toys.isChecked();
-        // int low =0;
-        // int high =0;
-        // 1 for low to high 0 for high to low
-        // console.log("enter /read/Users Design filter" + filterArr)
+
         console.log("enter /read/UserExistenceDesign filter")
         const UsersDesignRef = db.collection("Supplier Uploads")
         const response = await UsersDesignRef.get()
@@ -356,9 +442,9 @@ app.get("/read/UserExistenceDesign/filter/:", async (req, res) => {
         });
         filterdResArr = []
         responseArr.forEach(item => {
-                if(filterItems(filterArr,item,"Price")){
-                    filterdResArr.push(item)
-                }
+            if (filterItems(filterArr, item, "Price")) {
+                filterdResArr.push(item)
+            }
         })
 
         if (parseInt(filterArr[11]) === 1) {
@@ -376,10 +462,10 @@ app.get("/read/UserExistenceDesign/filter/:", async (req, res) => {
     }
 })
 
-function filterItems(filterArr, item,BidOrPrice) {
+function filterItems(filterArr, item, BidOrPrice) {
     for (let i = 0; i < filterArr.length - 3; i++) {
-        if (filterArr[i] === "1" ||filterArr[i] === " 1" ) {
-            if (item["subject"] === indexToSubjectName(i) ){
+        if (filterArr[i] === "1" || filterArr[i] === " 1") {
+            if (item["subject"] === indexToSubjectName(i)) {
                 if (item[BidOrPrice] >= Number.parseInt(filterArr[9].match(/\d+/)[0])) {
                     if (item[BidOrPrice] <= Number.parseInt(filterArr[10].match(/\d+/)[0])) {
                         return true;
@@ -388,11 +474,8 @@ function filterItems(filterArr, item,BidOrPrice) {
             }
         }
     }
-return false;
+    return false;
 }
-
-
-
 
 
 const server = app.listen(PORT, () => {
@@ -415,3 +498,5 @@ io.on('connection', (socket) => {
         io.emit('counter', count);
     })
 })
+
+
