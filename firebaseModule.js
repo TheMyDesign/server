@@ -62,7 +62,71 @@ async function PalaceOrderToFirebase(doc,itemPrice, admin) {
     }
 }
 
+async function getDocumentById(collection, documentId) {
+    try {
+        const documentRef = db.collection(collection).doc(documentId);
+        const snapshot = await documentRef.get();
+
+        if (snapshot.exists) {
+            const documentData = snapshot.data();
+            // console.log('Document data:', documentData);
+            return documentData;
+        } else {
+            // console.log('Document not found');
+            return null;
+        }
+    } catch (error) {
+        console.error('Error getting document:', error);
+        throw error;
+    }
+}
+
+async function updateDocument(collectionName, documentId, updatedData,db) {
+    try {
+        console.log(documentId)
+        const documentRef = db.collection(collectionName).doc(documentId);
+        await documentRef.update(updatedData);
+        console.log('Document updated successfully');
+    } catch (error) {
+        console.error('Error updating document:', error.message,"documentId = ",documentId);
+        throw error;
+    }
+}
+
+async function getDocList(collectionName,db,userId="") {
+    let filteredResArr;
+    try {
+        console.log("/getDocList - ",collectionName)
+        const docsRef = db.collection(collectionName)
+        const response = await docsRef.get()
+        let responseArr = []
+        response.forEach(doc => {
+            const itemData = doc.data();
+            const itemId = doc.id;
+            responseArr.push({itemId, ...itemData});
+        });
+
+        filteredResArr = []
+        responseArr.forEach(item => {
+            if(userId !== ""){
+                if (item["userId"] === userId){
+                    filteredResArr.push(item);
+                }
+            }else{
+                filteredResArr.push(item);
+            }
+        })
+        return filteredResArr;
+    } catch (error) {
+        console.error('Error getDocList :', error.message,"collectionName = ",collectionName);
+        throw error;
+    }
+}
+
 module.exports = {
     uploadImageAndSaveToFirestore,
-    PalaceOrderToFirebase
+    PalaceOrderToFirebase,
+    getDocumentById,
+    getDocList,
+    updateDocument
 };

@@ -19,6 +19,8 @@ async function generateAIPhoto(prompt) {
         );
 
         if (response.status === 200) {
+            console.log("response.status === 200");
+
             const jsonString = response.data.toString();
             const parsedJson = JSON.parse(jsonString);
             const url = parsedJson.data[0].url;

@@ -7,6 +7,8 @@ const uuid = require('uuid-v4');
 const {Storage} = require('@google-cloud/storage');
 
 const app = express()
+app.use(bodyParser.json());
+
 const admin = require("firebase-admin")
 const credentials = require("./serviceAccountKey.json")
 admin.initializeApp({
@@ -20,43 +22,31 @@ const PORT = process.env.PORT || 8080
 app.use(bodyParser.json());
 
 
-let itemStringToFile = new Map();
-itemStringToFile.set('t-shirt-grey', 'itemsDir/t-shirt-grey.png');
-itemStringToFile.set('hat-white', 'itemsDir/hat-white.jpg');
-itemStringToFile.set('Pants', 'itemsDir/pants.png');
-itemStringToFile.set('Shirt', 'itemsDir/shirt-white.png');
-itemStringToFile.set('T-Shirt', 'itemsDir/t-shirt-grey.png');
-itemStringToFile.set('Coat', 'itemsDir/coat.png');
-itemStringToFile.set('Hat', 'itemsDir/hat-white.jpg');
 
-let itemStringToXY = new Map();
-itemStringToXY.set('t-shirt-grey', [300, 300]);
-itemStringToXY.set('hat-white', [350, 300]);
-itemStringToXY.set('Pants', [300, 300]);
-itemStringToXY.set('Shirt', [300, 300]);
-itemStringToXY.set('T-Shirt', [300, 300]);
-itemStringToXY.set('Coat', [300, 300]);
-itemStringToXY.set('Hat', [350, 300]);
 
-function generateUniqueId(clothingKind, userId = "") {
-    const timestamp = new Date().getTime().toString();
-    // const uniqueId = Math.random().toString(36).substr(2, 9);
-    return "imageOutput/" + clothingKind + "_" + userId + '_' + timestamp + ".jpg";
-}
 
-const getCounter = (() => {
-    let counter = 0;
-    return () => {
-        counter++;
-        return counter;
-    };
-
-})();
-
-const Dalle2Token = require('./env.js');
 const aiGenerator = require("./aiGenerator");
 const imageCombiner = require("./imageCombiner");
-const firebaseUploader = require("./firebaseUploader");
+const firebaseModule = require("./firebaseModule");
+
+
+// how to use - http://10.0.2.2:8080/confirmOrderReceived
+app.post("/confirmOrderReceived", async (req, res) => {
+    try {
+        console.log("/confirmOrderReceived")
+        const collection = "UsersOrders"
+        const documentId = req.body.orderItemId;
+        const updateData =
+            {
+                receivedOrder: "yes"
+            };
+        await firebaseModule.updateDocument(collection, documentId, updateData, db)
+
+        res.status(200).json({message: 'Order conformation Received successfully'});
+    } catch (error) {
+        res.send(error)
+    }
+})
 
 // how to use - http://localhost:8080/yourOwnOngoingOrders?userId=
 app.get("/yourOwnOngoingOrders", async (req, res) => {
@@ -64,21 +54,38 @@ app.get("/yourOwnOngoingOrders", async (req, res) => {
     try {
         const uid = req.query.userId;
         console.log("/yourOwnOngoingOrders")
-        const UserExistingDesignRef = db.collection("UsersOrders")
-        const response = await UserExistingDesignRef.get()
-        let responseArr = []
-        response.forEach(doc => {
-            // responseArr.push(doc.data())
-            const itemData = doc.data();
-            const itemId = doc.id; // Get the document ID as the item ID
-            responseArr.push({itemId, ...itemData}); // Include itemId in the response
-        });
+        let responseArr = await firebaseModule.getDocList("UsersOrders", db, uid)
+
         filteredResArr = []
         responseArr.forEach(item => {
             if (item["userId"] === uid) {
+                if (item.hasOwnProperty("receivedOrder") && item["receivedOrder"] === "yes") {
+
+                } else {
+                    filteredResArr.push(item)
+                }
+                // console.log(JSON.stringify(item, null, 2))
+            }
+        })
+        let collectionName = "Users/" + uid + "/Orders"
+        responseArr = await firebaseModule.getDocList(collectionName, db, "")
+        responseArr.forEach(item => {
+            if (item.hasOwnProperty("receivedOrder") && item["receivedOrder"] === "yes") {
+            } else {
+                filteredResArr.push(item)
+                // console.log(JSON.stringify(item, null, 2))
+            }
+        })
+        collectionName = "Admins/" + uid + "/Order"
+        let responseArr2 = await firebaseModule.getDocList(collectionName, db, "")
+        responseArr2.forEach(item => {
+            console.log(JSON.stringify(item, null, 2))
+            if (item.hasOwnProperty("receivedOrder") && item["receivedOrder"] === "yes") {
+            } else {
                 filteredResArr.push(item)
             }
         })
+        console.log(filteredResArr.length)
         res.send(filteredResArr);
     } catch (error) {
         res.send(error)
@@ -93,35 +100,16 @@ app.post("/PlaceOrder", async (req, res) => {
         const designItemId = req.body.designItemId;
         const itemPrice = req.body.itemPrice;
 
-        const doc = await getDocumentById("/UserExistingDesign", designItemId)
+        const doc = await firebaseModule.getDocumentById("/UserExistingDesign", designItemId)
         console.log(doc)
 
-        await firebaseUploader.PalaceOrderToFirebase(doc, itemPrice, admin)
+        await firebaseModule.PalaceOrderToFirebase(doc, itemPrice, admin)
 
         res.status(200).json({message: 'Order placed successfully'});
     } catch (error) {
         res.send(error)
     }
 })
-
-async function getDocumentById(collection, documentId) {
-    try {
-        const documentRef = db.collection(collection).doc(documentId);
-        const snapshot = await documentRef.get();
-
-        if (snapshot.exists) {
-            const documentData = snapshot.data();
-            // console.log('Document data:', documentData);
-            return documentData;
-        } else {
-            // console.log('Document not found');
-            return null;
-        }
-    } catch (error) {
-        console.error('Error getting document:', error);
-        throw error;
-    }
-}
 
 
 // how to use - http://localhost:8080/yourOwnExistingDesign?userId=
@@ -168,14 +156,14 @@ app.post("/generatedNewImage", async (req, res) => {
         console.log("url = " + aiPhotoUrl)
 
         // Use imageCombiner module to combine images
-        const baseImagePath = itemStringToFile.get(itemString); // Provide the path to your base image
-        const x = itemStringToXY.get(itemString)[0]; // Example x-coordinate for positioning
-        const y = itemStringToXY.get(itemString)[1]; // Example y-coordinate for positioning
-        const outputFileName = generateUniqueId(clothingKind, userId); // Provide the desired output file name
+        const baseImagePath = itemStringToFile.get(itemString);
+        const x = itemStringToXY.get(itemString)[0];
+        const y = itemStringToXY.get(itemString)[1];
+        const outputFileName = generateUniqueId(clothingKind, userId);
 
         await imageCombiner.combineImages(baseImagePath, aiPhotoUrl, x, y, outputFileName);
 
-        const imageUrl = await firebaseUploader.uploadImageAndSaveToFirestore(userId, outputFileName, receivedData, admin);
+        const imageUrl = await firebaseModule.uploadImageAndSaveToFirestore(userId, outputFileName, receivedData, admin);
 
         res.status(200).json({message: 'JSON data received successfully', imageUrl: imageUrl});
         res.send()
@@ -271,6 +259,24 @@ app.get("/read/UserExistenceDesign/:Price", async (req, res) => {
     }
 })
 
+//http://10.0.2.2:8080/
+// how to use - http://localhost:8080/generateAIPhotoTest/"prompt"
+app.get("/generateAIPhotoTest/:prompt", async (req, res) => {
+    try {
+        const prompt = req.params.prompt
+        console.log("prompt = ", prompt)
+        const imageUrl = await aiGenerator.generateAIPhoto(prompt)
+        res.send(imageUrl);
+    } catch (error) {
+        res.send(error)
+    }
+})
+
+function generateUniqueId(clothingKind, userId = "") {
+    const timestamp = new Date().getTime().toString();
+    // const uniqueId = Math.random().toString(36).substr(2, 9);
+    return "imageOutput/" + clothingKind + "_" + userId + '_' + timestamp + ".jpg";
+}
 
 //
 app.post('/update/:id/:suject', async (req, res) => {
@@ -476,6 +482,23 @@ function filterItems(filterArr, item, BidOrPrice) {
     }
     return false;
 }
+let itemStringToFile = new Map();
+itemStringToFile.set('t-shirt-grey', 'itemsDir/t-shirt-grey.png');
+itemStringToFile.set('hat-white', 'itemsDir/hat-white.jpg');
+itemStringToFile.set('Pants', 'itemsDir/pants.png');
+itemStringToFile.set('Shirt', 'itemsDir/shirt-white.png');
+itemStringToFile.set('T-Shirt', 'itemsDir/t-shirt-grey.png');
+itemStringToFile.set('Coat', 'itemsDir/coat.png');
+itemStringToFile.set('Hat', 'itemsDir/hat-white.jpg');
+
+let itemStringToXY = new Map();
+itemStringToXY.set('t-shirt-grey', [300, 300]);
+itemStringToXY.set('hat-white', [350, 300]);
+itemStringToXY.set('Pants', [300, 300]);
+itemStringToXY.set('Shirt', [300, 300]);
+itemStringToXY.set('T-Shirt', [300, 300]);
+itemStringToXY.set('Coat', [300, 300]);
+itemStringToXY.set('Hat', [350, 300]);
 
 
 const server = app.listen(PORT, () => {
@@ -498,5 +521,15 @@ io.on('connection', (socket) => {
         io.emit('counter', count);
     })
 })
+
+
+
+
+
+
+
+
+
+
 
 
