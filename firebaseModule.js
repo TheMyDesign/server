@@ -43,7 +43,6 @@ async function uploadImageAndSaveToFirestore(userId, imagePath, receivedData, ad
 async function PalaceOrderToFirebase(doc,itemPrice, admin) {
     try {
         const firestore = admin.firestore();
-
         // Save the URL to Firestore along with other details
         const newOrderRef = await firestore.collection("UsersOrders").add({
             userId: doc["userId"],
@@ -62,24 +61,6 @@ async function PalaceOrderToFirebase(doc,itemPrice, admin) {
     }
 }
 
-async function getDocumentById(collection, documentId) {
-    try {
-        const documentRef = db.collection(collection).doc(documentId);
-        const snapshot = await documentRef.get();
-
-        if (snapshot.exists) {
-            const documentData = snapshot.data();
-            // console.log('Document data:', documentData);
-            return documentData;
-        } else {
-            // console.log('Document not found');
-            return null;
-        }
-    } catch (error) {
-        console.error('Error getting document:', error);
-        throw error;
-    }
-}
 
 async function updateDocument(collectionName, documentId, updatedData,db) {
     try {
@@ -122,6 +103,26 @@ async function getDocList(collectionName,db,userId="") {
         throw error;
     }
 }
+
+async function getDocumentById(collection, documentId) {
+    try {
+        const documentRef = db.collection(collection).doc(documentId);
+        const snapshot = await documentRef.get();
+
+        if (snapshot.exists) {
+            const documentData = snapshot.data();
+            // console.log('Document data:', documentData);
+            return documentData;
+        } else {
+            // console.log('Document not found');
+            return null;
+        }
+    } catch (error) {
+        console.error('Error getting document:', error);
+        throw error;
+    }
+}
+
 
 module.exports = {
     uploadImageAndSaveToFirestore,

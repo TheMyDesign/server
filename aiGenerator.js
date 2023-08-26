@@ -1,6 +1,6 @@
 const axios = require('axios');
 const Dalle2Token = require('./env.js');
-
+//https://platform.openai.com/account/api-keys - sometimes we need to reinstall the apikey
 async function generateAIPhoto(prompt) {
     try {
         const response = await axios.post(
